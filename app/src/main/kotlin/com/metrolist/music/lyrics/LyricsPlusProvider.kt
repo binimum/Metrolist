@@ -123,7 +123,7 @@ private data class BinimumLyricsFetchResult(
 object LyricsPlusProvider : LyricsProvider {
     override val name = "LyricsPlus"
     // ISRC format: 2-letter country code + 3-char registrant + 2-digit year + 5-digit designation.
-    private const val ISRC_PATTERN = "^[A-Z]{2}[A-Z0-9]{3}\\d{7}$"
+    private const val ISRC_PATTERN = "^[A-Z]{2}[A-Z0-9]{3}\\d{2}\\d{5}$"
     private val ISRC_REGEX by lazy { Regex(ISRC_PATTERN) }
     private const val BINIMUM_API_BASE_URL = "https://lyrics-api.binimum.org/"
 
@@ -229,7 +229,7 @@ object LyricsPlusProvider : LyricsProvider {
         } else {
             requestByTrackMetadata()
         } ?: run {
-            Timber.tag("LyricsPlus").w("Binimum API request failed (isrc=$canUseIsrc, metadata=${title.isNotBlank() && artist.isNotBlank()})")
+            Timber.tag("LyricsPlus").w("Binimum API request failed (canUseIsrc=$canUseIsrc, hasMetadata=${title.isNotBlank() && artist.isNotBlank()})")
             return null
         }
 
