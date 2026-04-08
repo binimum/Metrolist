@@ -23,7 +23,6 @@ import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import timber.log.Timber
-import kotlin.math.abs
 
 @Serializable
 private data class AgentInfo(
@@ -127,14 +126,6 @@ object LyricsPlusProvider : LyricsProvider {
     private const val ISRC_PATTERN = "^[A-Z]{2}[A-Z0-9]{3}\\d{7}$"
     private val ISRC_REGEX by lazy { Regex(ISRC_PATTERN) }
     private const val BINIMUM_API_BASE_URL = "https://lyrics-api.binimum.org/"
-    // Result scoring favors exact title/artist and very close durations; word sync gets a bonus.
-    private const val SCORE_EXACT_TITLE_MATCH = 100
-    private const val SCORE_PARTIAL_TITLE_MATCH = 50
-    private const val SCORE_ARTIST_MATCH = 80
-    private const val SCORE_DURATION_DIFF_LE_1 = 60
-    private const val SCORE_DURATION_DIFF_LE_3 = 40
-    private const val SCORE_DURATION_DIFF_LE_6 = 20
-    private const val SCORE_WORD_SYNC = 30
 
     private val baseUrls = listOf(
         "https://lyricsplus.binimum.org", //binimum's alternate server
@@ -249,11 +240,7 @@ object LyricsPlusProvider : LyricsProvider {
         if (payload.results.isEmpty()) return null
 
         val bestResult = payload.results
-            .asSequence()
-            .filter { !it.lyricsUrl.isNullOrBlank() }
-            .map { it to scoreBinimumResult(it, title, artist, duration) }
-            .maxByOrNull { (_, score) -> score }
-            ?.first
+            .firstOrNull { !it.lyricsUrl.isNullOrBlank() }
             ?: return null
 
         val lyricsUrl = bestResult.lyricsUrl ?: return null
@@ -280,52 +267,6 @@ object LyricsPlusProvider : LyricsProvider {
             lrc = lrc,
             isWordSync = bestResult.timing_type.equals("word", ignoreCase = true),
         )
-    }
-
-    private fun scoreBinimumResult(
-        result: BinimumLyricsResult,
-        title: String,
-        artist: String,
-        duration: Int,
-    ): Int {
-        val cleanedTitle = title.lowercase().trim()
-        val cleanedArtist = artist.lowercase().trim()
-        val resultTitle = result.track_name?.lowercase()?.trim().orEmpty()
-        val resultArtist = result.artist_name?.lowercase()?.trim().orEmpty()
-        var score = 0
-
-        if (cleanedTitle.isNotBlank() && resultTitle == cleanedTitle) {
-            score += SCORE_EXACT_TITLE_MATCH
-        } else if (
-            cleanedTitle.isNotBlank() &&
-            resultTitle.isNotBlank() &&
-            (resultTitle.contains(cleanedTitle) || cleanedTitle.contains(resultTitle))
-        ) {
-            score += SCORE_PARTIAL_TITLE_MATCH
-        }
-
-        if (
-            cleanedArtist.isNotBlank() &&
-            resultArtist.isNotBlank() &&
-            (resultArtist.contains(cleanedArtist) || cleanedArtist.contains(resultArtist))
-        ) {
-            score += SCORE_ARTIST_MATCH
-        }
-
-        if (duration > 0) {
-            result.duration?.let { resultDuration ->
-                val diff = abs(resultDuration - duration)
-                score += when {
-                    diff <= 1 -> SCORE_DURATION_DIFF_LE_1
-                    diff <= 3 -> SCORE_DURATION_DIFF_LE_3
-                    diff <= 6 -> SCORE_DURATION_DIFF_LE_6
-                    else -> 0
-                }
-            }
-        }
-
-        if (result.timing_type.equals("word", ignoreCase = true)) score += SCORE_WORD_SYNC
-        return score
     }
 
     /**
