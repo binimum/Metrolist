@@ -122,7 +122,7 @@ private data class BinimumLyricsFetchResult(
 
 object LyricsPlusProvider : LyricsProvider {
     override val name = "LyricsPlus"
-    // ISRC format: 2-letter country code + 3-char registrant + 2-digit year + 5-digit designation.
+    // ISRC format: 2-letter country code + 3-char alphanumeric registrant + 2-digit year + 5-digit designation.
     private const val ISRC_PATTERN = "^[A-Z]{2}[A-Z0-9]{3}\\d{2}\\d{5}$"
     private val ISRC_REGEX by lazy { Regex(ISRC_PATTERN) }
     private const val BINIMUM_API_BASE_URL = "https://lyrics-api.binimum.org/"
@@ -206,8 +206,9 @@ object LyricsPlusProvider : LyricsProvider {
     ): BinimumLyricsFetchResult? {
         val normalizedId = id.trim()
         val canUseIsrc = normalizedId.matches(ISRC_REGEX)
+        val hasMetadata = title.isNotBlank() && artist.isNotBlank()
         // Search is valid when we have an ISRC, or when metadata (title + artist) is present.
-        if (!canUseIsrc && (title.isBlank() || artist.isBlank())) return null
+        if (!canUseIsrc && !hasMetadata) return null
 
         suspend fun requestByTrackMetadata() = runCatching {
             client.get(BINIMUM_API_BASE_URL) {
@@ -229,7 +230,7 @@ object LyricsPlusProvider : LyricsProvider {
         } else {
             requestByTrackMetadata()
         } ?: run {
-            Timber.tag("LyricsPlus").w("Binimum API request failed (canUseIsrc=$canUseIsrc, hasMetadata=${title.isNotBlank() && artist.isNotBlank()})")
+            Timber.tag("LyricsPlus").w("Binimum API request failed (canUseIsrc=$canUseIsrc, hasMetadata=$hasMetadata)")
             return null
         }
 
@@ -239,11 +240,10 @@ object LyricsPlusProvider : LyricsProvider {
             ?: return null
         if (payload.results.isEmpty()) return null
 
-        val bestResult = payload.results
+        val selectedResult = payload.results
             .firstOrNull { !it.lyricsUrl.isNullOrBlank() }
             ?: return null
-
-        val lyricsUrl = bestResult.lyricsUrl ?: return null
+        val lyricsUrl = selectedResult.lyricsUrl.orEmpty()
         val ttml = runCatching {
             client.get(lyricsUrl)
         }.getOrNull()?.let { ttmlResponse ->
@@ -265,7 +265,7 @@ object LyricsPlusProvider : LyricsProvider {
 
         return BinimumLyricsFetchResult(
             lrc = lrc,
-            isWordSync = bestResult.timing_type.equals("word", ignoreCase = true),
+            isWordSync = selectedResult.timing_type.equals("word", ignoreCase = true),
         )
     }
 
