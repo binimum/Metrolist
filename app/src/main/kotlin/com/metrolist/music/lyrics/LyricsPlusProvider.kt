@@ -123,9 +123,11 @@ private data class BinimumLyricsFetchResult(
 
 object LyricsPlusProvider : LyricsProvider {
     override val name = "LyricsPlus"
+    // ISRC format: 2-letter country code + 3-char registrant + 7-digit year/designation.
     private const val ISRC_PATTERN = "^[A-Z]{2}[A-Z0-9]{3}\\d{7}$"
     private val ISRC_REGEX by lazy { Regex(ISRC_PATTERN) }
     private const val BINIMUM_API_BASE_URL = "https://lyrics-api.binimum.org/"
+    // Result scoring favors exact title/artist and very close durations; word sync gets a bonus.
     private const val SCORE_EXACT_TITLE_MATCH = 100
     private const val SCORE_PARTIAL_TITLE_MATCH = 50
     private const val SCORE_ARTIST_MATCH = 80
@@ -243,8 +245,11 @@ object LyricsPlusProvider : LyricsProvider {
         if (payload.results.isEmpty()) return null
 
         val bestResult = payload.results
+            .asSequence()
             .filter { !it.lyricsUrl.isNullOrBlank() }
-            .maxByOrNull { scoreBinimumResult(it, title, artist, duration) }
+            .map { it to scoreBinimumResult(it, title, artist, duration) }
+            .maxByOrNull { (_, score) -> score }
+            ?.first
             ?: return null
 
         val lyricsUrl = bestResult.lyricsUrl ?: return null
@@ -452,15 +457,24 @@ object LyricsPlusProvider : LyricsProvider {
 
         val response = fetchLyrics(title, artist, duration, album)
         val lyricsPlusLrc = convertToLrc(response)
+        resolveLyricsWithFallback(binimumResult, response, lyricsPlusLrc)
+            ?: throw IllegalStateException("Lyrics unavailable")
+    }
 
+    private fun resolveLyricsWithFallback(
+        binimumResult: BinimumLyricsFetchResult?,
+        lyricsPlusResponse: LyricsPlusResponse?,
+        lyricsPlusLrc: String?,
+    ): String? {
         if (binimumResult?.isWordSync == false) {
-            if (response?.type.equals("Word", ignoreCase = true) && !lyricsPlusLrc.isNullOrBlank()) {
-                return@runCatching lyricsPlusLrc
+            val hasWordSyncFromLyricsPlus = lyricsPlusResponse?.type.equals("Word", ignoreCase = true)
+            return if (hasWordSyncFromLyricsPlus && !lyricsPlusLrc.isNullOrBlank()) {
+                lyricsPlusLrc
+            } else {
+                binimumResult.lrc
             }
-            return@runCatching binimumResult.lrc
         }
-
-        lyricsPlusLrc ?: throw IllegalStateException("Lyrics unavailable")
+        return lyricsPlusLrc
     }
 
     override suspend fun getAllLyrics(
