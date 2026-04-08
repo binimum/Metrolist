@@ -6,6 +6,7 @@
 package com.metrolist.music.lyrics
 
 import android.content.Context
+import com.metrolist.music.betterlyrics.TTMLParser
 import com.metrolist.music.constants.EnableLyricsPlus
 import com.metrolist.music.utils.dataStore
 import com.metrolist.music.utils.get
@@ -21,6 +22,7 @@ import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import timber.log.Timber
+import kotlin.math.abs
 
 @Serializable
 private data class AgentInfo(
@@ -91,6 +93,31 @@ private data class LyricsPlusResponse(
     val metadata: LyricsMetadata? = null,
     val lyrics: List<LyricLine>? = null,
     val cached: String? = null,
+)
+
+@Serializable
+private data class BinimumLyricsApiResponse(
+    val total: Int? = null,
+    val source: String? = null,
+    val results: List<BinimumLyricsResult> = emptyList(),
+    val error: String? = null,
+)
+
+@Serializable
+private data class BinimumLyricsResult(
+    val id: String? = null,
+    val track_name: String? = null,
+    val artist_name: String? = null,
+    val album_name: String? = null,
+    val duration: Int? = null,
+    val isrc: String? = null,
+    val timing_type: String? = null,
+    val lyricsUrl: String? = null,
+)
+
+private data class BinimumLyricsFetchResult(
+    val lrc: String,
+    val isWordSync: Boolean,
 )
 
 object LyricsPlusProvider : LyricsProvider {
@@ -164,6 +191,92 @@ object LyricsPlusProvider : LyricsProvider {
             }
         }
         return null
+    }
+
+    private suspend fun fetchBinimumLyricsApi(
+        title: String,
+        artist: String,
+        duration: Int,
+        album: String?,
+    ): BinimumLyricsFetchResult? {
+        if (title.isBlank() || artist.isBlank()) return null
+
+        val response = runCatching {
+            client.get("https://lyrics-api.binimum.org/") {
+                parameter("track", title)
+                parameter("artist", artist)
+                if (!album.isNullOrBlank()) parameter("album", album)
+                if (duration > 0) parameter("duration", duration)
+            }
+        }.getOrNull() ?: return null
+
+        if (response.status != HttpStatusCode.OK) return null
+
+        val payload = runCatching { response.body<BinimumLyricsApiResponse>() }.getOrNull()
+            ?: return null
+        if (payload.results.isEmpty()) return null
+
+        val bestResult = payload.results
+            .filter { !it.lyricsUrl.isNullOrBlank() }
+            .maxByOrNull { scoreBinimumResult(it, title, artist, duration) }
+            ?: return null
+
+        val lyricsUrl = bestResult.lyricsUrl ?: return null
+        val ttml = runCatching {
+            client.get(lyricsUrl)
+        }.getOrNull()?.let { ttmlResponse ->
+            if (ttmlResponse.status == HttpStatusCode.OK) {
+                runCatching { ttmlResponse.body<String>() }.getOrNull()
+            } else {
+                null
+            }
+        } ?: return null
+
+        val parsedLines = runCatching { TTMLParser.parseTTML(ttml) }.getOrNull()
+            ?.takeIf { it.isNotEmpty() } ?: return null
+        val lrc = runCatching { TTMLParser.toLRC(parsedLines).trim() }.getOrNull()
+            ?.ifBlank { null } ?: return null
+
+        return BinimumLyricsFetchResult(
+            lrc = lrc,
+            isWordSync = bestResult.timing_type.equals("word", ignoreCase = true),
+        )
+    }
+
+    private fun scoreBinimumResult(
+        result: BinimumLyricsResult,
+        title: String,
+        artist: String,
+        duration: Int,
+    ): Int {
+        val cleanedTitle = title.lowercase().trim()
+        val cleanedArtist = artist.lowercase().trim()
+        val resultTitle = result.track_name?.lowercase()?.trim().orEmpty()
+        val resultArtist = result.artist_name?.lowercase()?.trim().orEmpty()
+        var score = 0
+
+        if (resultTitle == cleanedTitle) {
+            score += 100
+        } else if (resultTitle.contains(cleanedTitle) || cleanedTitle.contains(resultTitle)) {
+            score += 50
+        }
+
+        if (resultArtist.contains(cleanedArtist) || cleanedArtist.contains(resultArtist)) {
+            score += 80
+        }
+
+        if (duration > 0 && result.duration != null) {
+            val diff = abs(result.duration - duration)
+            score += when {
+                diff <= 1 -> 60
+                diff <= 3 -> 40
+                diff <= 6 -> 20
+                else -> 0
+            }
+        }
+
+        if (result.timing_type.equals("word", ignoreCase = true)) score += 30
+        return score
     }
 
     /**
@@ -294,8 +407,22 @@ object LyricsPlusProvider : LyricsProvider {
         duration: Int,
         album: String?,
     ): Result<String> = runCatching {
+        val binimumResult = fetchBinimumLyricsApi(title, artist, duration, album)
+        if (binimumResult?.isWordSync == true) {
+            return@runCatching binimumResult.lrc
+        }
+
         val response = fetchLyrics(title, artist, duration, album)
-        convertToLrc(response) ?: throw IllegalStateException("Lyrics unavailable")
+        val lyricsPlusLrc = convertToLrc(response)
+
+        if (binimumResult?.isWordSync == false) {
+            if (response?.type.equals("Word", ignoreCase = true) && !lyricsPlusLrc.isNullOrBlank()) {
+                return@runCatching lyricsPlusLrc
+            }
+            return@runCatching binimumResult.lrc
+        }
+
+        lyricsPlusLrc ?: throw IllegalStateException("Lyrics unavailable")
     }
 
     override suspend fun getAllLyrics(
