@@ -18,6 +18,7 @@ import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.get
 import io.ktor.client.request.parameter
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -122,7 +123,8 @@ private data class BinimumLyricsFetchResult(
 
 object LyricsPlusProvider : LyricsProvider {
     override val name = "LyricsPlus"
-    private val ISRC_REGEX = Regex("^[A-Z]{2}[A-Z0-9]{3}\\d{7}$")
+    private const val ISRC_PATTERN = "^[A-Z]{2}[A-Z0-9]{3}\\d{7}$"
+    private val ISRC_REGEX by lazy { Regex(ISRC_PATTERN) }
     private const val BINIMUM_API_BASE_URL = "https://lyrics-api.binimum.org/"
     private const val SCORE_EXACT_TITLE_MATCH = 100
     private const val SCORE_PARTIAL_TITLE_MATCH = 50
@@ -234,7 +236,7 @@ object LyricsPlusProvider : LyricsProvider {
             requestByTrackMetadata()
         } ?: return null
 
-        if (response.status != HttpStatusCode.OK) return null
+        if (!response.status.isSuccess()) return null
 
         val payload = runCatching { response.body<BinimumLyricsApiResponse>() }.getOrNull()
             ?: return null
@@ -258,8 +260,10 @@ object LyricsPlusProvider : LyricsProvider {
 
         val parsedLines = runCatching { TTMLParser.parseTTML(ttml) }.getOrNull()
             ?.takeIf { it.isNotEmpty() } ?: return null
-        val lrc = runCatching { TTMLParser.toLRC(parsedLines).trim() }.getOrNull()
-            ?.ifBlank { null } ?: return null
+        val lrc = runCatching { TTMLParser.toLRC(parsedLines).trim() }
+            .getOrNull()
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
 
         return BinimumLyricsFetchResult(
             lrc = lrc,
@@ -297,13 +301,15 @@ object LyricsPlusProvider : LyricsProvider {
             score += SCORE_ARTIST_MATCH
         }
 
-        if (duration > 0 && result.duration != null) {
-            val diff = abs(result.duration - duration)
-            score += when {
-                diff <= 1 -> SCORE_DURATION_DIFF_LE_1
-                diff <= 3 -> SCORE_DURATION_DIFF_LE_3
-                diff <= 6 -> SCORE_DURATION_DIFF_LE_6
-                else -> 0
+        if (duration > 0) {
+            result.duration?.let { resultDuration ->
+                val diff = abs(resultDuration - duration)
+                score += when {
+                    diff <= 1 -> SCORE_DURATION_DIFF_LE_1
+                    diff <= 3 -> SCORE_DURATION_DIFF_LE_3
+                    diff <= 6 -> SCORE_DURATION_DIFF_LE_6
+                    else -> 0
+                }
             }
         }
 
