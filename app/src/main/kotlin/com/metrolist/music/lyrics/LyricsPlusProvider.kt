@@ -123,7 +123,7 @@ private data class BinimumLyricsFetchResult(
 
 object LyricsPlusProvider : LyricsProvider {
     override val name = "LyricsPlus"
-    // ISRC format: 2-letter country code + 3-char registrant + 7-digit year/designation.
+    // ISRC format: 2-letter country code + 3-char registrant + 2-digit year + 5-digit designation.
     private const val ISRC_PATTERN = "^[A-Z]{2}[A-Z0-9]{3}\\d{7}$"
     private val ISRC_REGEX by lazy { Regex(ISRC_PATTERN) }
     private const val BINIMUM_API_BASE_URL = "https://lyrics-api.binimum.org/"
@@ -215,6 +215,7 @@ object LyricsPlusProvider : LyricsProvider {
     ): BinimumLyricsFetchResult? {
         val normalizedId = id.trim()
         val canUseIsrc = normalizedId.matches(ISRC_REGEX)
+        // Search is valid when we have an ISRC, or when metadata (title + artist) is present.
         if (!canUseIsrc && (title.isBlank() || artist.isBlank())) return null
 
         suspend fun requestByTrackMetadata() = runCatching {
@@ -236,7 +237,10 @@ object LyricsPlusProvider : LyricsProvider {
             requestByIsrc() ?: requestByTrackMetadata()
         } else {
             requestByTrackMetadata()
-        } ?: return null
+        } ?: run {
+            Timber.tag("LyricsPlus").w("Binimum API request failed (isrc=$canUseIsrc, metadata=${title.isNotBlank() && artist.isNotBlank()})")
+            return null
+        }
 
         if (!response.status.isSuccess()) return null
 
@@ -263,7 +267,9 @@ object LyricsPlusProvider : LyricsProvider {
             }
         } ?: return null
 
-        val parsedLines = runCatching { TTMLParser.parseTTML(ttml) }.getOrNull()
+        val parsedLines = runCatching { TTMLParser.parseTTML(ttml) }
+            .onFailure { Timber.tag("LyricsPlus").w(it, "Failed parsing binimum TTML") }
+            .getOrNull()
             ?.takeIf { it.isNotEmpty() } ?: return null
         val lrc = runCatching { TTMLParser.toLRC(parsedLines).trim() }
             .getOrNull()
