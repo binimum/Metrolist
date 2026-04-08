@@ -122,6 +122,7 @@ private data class BinimumLyricsFetchResult(
 
 object LyricsPlusProvider : LyricsProvider {
     override val name = "LyricsPlus"
+    private val isrcRegex = Regex("^[A-Z]{2}[A-Z0-9]{3}\\d{7}$")
 
     private val baseUrls = listOf(
         "https://lyricsplus.binimum.org", //binimum's alternate server
@@ -194,21 +195,36 @@ object LyricsPlusProvider : LyricsProvider {
     }
 
     private suspend fun fetchBinimumLyricsApi(
+        id: String,
         title: String,
         artist: String,
         duration: Int,
         album: String?,
     ): BinimumLyricsFetchResult? {
-        if (title.isBlank() || artist.isBlank()) return null
+        val normalizedId = id.trim()
+        val canUseIsrc = normalizedId.matches(isrcRegex)
+        if (!canUseIsrc && (title.isBlank() || artist.isBlank())) return null
 
-        val response = runCatching {
+        suspend fun requestByTrackMetadata() = runCatching {
             client.get("https://lyrics-api.binimum.org/") {
                 parameter("track", title)
                 parameter("artist", artist)
                 if (!album.isNullOrBlank()) parameter("album", album)
                 if (duration > 0) parameter("duration", duration)
             }
-        }.getOrNull() ?: return null
+        }.getOrNull()
+
+        suspend fun requestByIsrc() = runCatching {
+            client.get("https://lyrics-api.binimum.org/") {
+                parameter("isrc", normalizedId.uppercase())
+            }
+        }.getOrNull()
+
+        val response = if (canUseIsrc) {
+            requestByIsrc() ?: requestByTrackMetadata()
+        } else {
+            requestByTrackMetadata()
+        } ?: return null
 
         if (response.status != HttpStatusCode.OK) return null
 
@@ -255,13 +271,21 @@ object LyricsPlusProvider : LyricsProvider {
         val resultArtist = result.artist_name?.lowercase()?.trim().orEmpty()
         var score = 0
 
-        if (resultTitle == cleanedTitle) {
+        if (cleanedTitle.isNotBlank() && resultTitle == cleanedTitle) {
             score += 100
-        } else if (resultTitle.contains(cleanedTitle) || cleanedTitle.contains(resultTitle)) {
+        } else if (
+            cleanedTitle.isNotBlank() &&
+            resultTitle.isNotBlank() &&
+            (resultTitle.contains(cleanedTitle) || cleanedTitle.contains(resultTitle))
+        ) {
             score += 50
         }
 
-        if (resultArtist.contains(cleanedArtist) || cleanedArtist.contains(resultArtist)) {
+        if (
+            cleanedArtist.isNotBlank() &&
+            resultArtist.isNotBlank() &&
+            (resultArtist.contains(cleanedArtist) || cleanedArtist.contains(resultArtist))
+        ) {
             score += 80
         }
 
@@ -407,7 +431,7 @@ object LyricsPlusProvider : LyricsProvider {
         duration: Int,
         album: String?,
     ): Result<String> = runCatching {
-        val binimumResult = fetchBinimumLyricsApi(title, artist, duration, album)
+        val binimumResult = fetchBinimumLyricsApi(id, title, artist, duration, album)
         if (binimumResult?.isWordSync == true) {
             return@runCatching binimumResult.lrc
         }
