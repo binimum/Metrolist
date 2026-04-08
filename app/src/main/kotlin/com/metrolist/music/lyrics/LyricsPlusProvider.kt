@@ -247,7 +247,7 @@ object LyricsPlusProvider : LyricsProvider {
         val ttml = runCatching {
             client.get(lyricsUrl)
         }.getOrNull()?.let { ttmlResponse ->
-            if (ttmlResponse.status == HttpStatusCode.OK) {
+            if (ttmlResponse.status.isSuccess()) {
                 runCatching { ttmlResponse.body<String>() }.getOrNull()
             } else {
                 null
