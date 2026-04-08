@@ -205,7 +205,8 @@ object LyricsPlusProvider : LyricsProvider {
         album: String?,
     ): BinimumLyricsFetchResult? {
         val normalizedId = id.trim()
-        val canUseIsrc = normalizedId.matches(ISRC_REGEX)
+        val normalizedIsrc = normalizedId.uppercase()
+        val canUseIsrc = normalizedIsrc.matches(ISRC_REGEX)
         val hasMetadata = title.isNotBlank() && artist.isNotBlank()
         // Search is valid when we have an ISRC, or when metadata (title + artist) is present.
         if (!canUseIsrc && !hasMetadata) return null
@@ -221,7 +222,7 @@ object LyricsPlusProvider : LyricsProvider {
 
         suspend fun requestByIsrc() = runCatching {
             client.get(BINIMUM_API_BASE_URL) {
-                parameter("isrc", normalizedId.uppercase())
+                parameter("isrc", normalizedIsrc)
             }
         }.getOrNull()
 
